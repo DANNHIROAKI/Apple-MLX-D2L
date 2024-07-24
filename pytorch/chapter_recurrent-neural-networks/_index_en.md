@@ -55,9 +55,25 @@ leojia@cse.cuhk.edu.hk
 
 king@cse.cuhk.edu.hk
 
-- 头衔：教授，IEEE
+- 头衔：教授，IEEE Fellow
 
+- 学历：加州理工本科，南加州大学博士
 
+- 方向：GNN，NLP，联邦学习
+
+- ==明确说明2025招收博士== 
+
+  ```txt
+  For Interested PhD Candidates For interested candidates, please send your CV, a publication list, and a brief (1-2 page) statement of your research interests to Prof. Irwin King
+  ```
+
+# Jimmy Ho Man Lee
+
+jlee@cse.cuhk.edu.hk
+
+- 头衔：Professor, Distinguished Fellow of HKCS, Fellow of HKIE
+
+- 学历；B.Math., M.Math. (Waterloo), Ph.D. (Victoria, Canada)
 
 
 

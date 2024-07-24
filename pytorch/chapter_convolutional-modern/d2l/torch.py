@@ -1,3 +1,17 @@
+DATA_HUB = dict()
+DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
+
+import numpy as np
+import torch
+import torchvision
+from PIL import Image
+from torch import nn
+from torch.nn import functional as F
+from torch.utils import data
+from torchvision import transforms
+
+nn_Module = nn.Module
+
 #################   WARNING   ################
 # The below part is generated automatically through:
 #    d2lbook build lib
@@ -424,15 +438,6 @@ def try_all_gpus():
     devices = [torch.device(f'cuda:{i}')
              for i in range(torch.cuda.device_count())]
     return devices if devices else [torch.device('cpu')]
-
-def corr2d(X, K):  #@save
-    """计算二维互相关运算"""
-    h, w = K.shape
-    Y = torch.zeros((X.shape[0] - h + 1, X.shape[1] - w + 1))
-    for i in range(Y.shape[0]):
-        for j in range(Y.shape[1]):
-            Y[i, j] = (X[i:i + h, j:j + w] * K).sum()
-    return Y
 
 
 # Alias defined in config.ini

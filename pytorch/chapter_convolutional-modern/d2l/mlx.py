@@ -1,3 +1,20 @@
+DATA_HUB = dict()
+DATA_URL = 'http://d2l-data.s3-accelerate.amazonaws.com/'
+
+import mlx
+import mlx.core
+import mlx.core as mx
+import mlx.nn as nn
+import mlx.optimizers as optim
+import numpy as np
+import torch
+import torchvision
+from PIL import Image
+from torch.utils import data
+from torchvision import transforms
+
+nn_Module = nn.Module
+
 #################   WARNING   ################
 # The below part is generated automatically through:
 #    d2lbook build lib
@@ -137,7 +154,7 @@ def squared_loss(y_hat, y):
     """均方损失
 
     Defined in :numref:`sec_linear_scratch`"""
-    return (y_hat - y.reshape(y_hat.shape)) ** 2 / 2
+    return (y_hat - d2l.reshape(y, y_hat.shape)) ** 2 / 2
 
 def sgd(params, grads, lr, batch_size):
     """小批量随机梯度下降
@@ -157,77 +174,101 @@ def load_array(data_arrays, batch_size, is_train=True):
         ids = perm[s:s + batch_size]
         yield X[ids], y[ids]
 
-# Copyright © 2023 Apple Inc.
-import gzip
-import pickle
-from pathlib import Path
-from tempfile import NamedTemporaryFile
-from mlx import data as dx
-from mlx.data.datasets.common import ensure_exists, urlretrieve_with_progress
+class Dataset:
+    def __init__(self, *tensors):
+        """Defined in :numref:`sec_fashion_mnist`"""
+        assert all(
+            tensors[0].shape[0] == tensor.shape[0] for tensor in tensors
+        ), "Size mismatch between tensors"
+        self.tensors = tensors
 
+    def __getitem__(self, index):
+        return tuple(mx.array(tensor[index]) for tensor in self.tensors)
 
-def load_mnist(root=None, train=True):
+    def __len__(self):
+        return self.tensors[0].shape[0]
+
+class DataLoader:
+    def __init__(self, dataset, batch_size=1, shuffle=False, drop_last=False):
+        """Defined in :numref:`sec_fashion_mnist`"""
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.indices = list(range(len(dataset)))
+        self.current_index = 0
+        if self.shuffle:
+            random.shuffle(self.indices)
+
+    def __iter__(self):
+        self.current_index = 0
+        if self.shuffle:
+            random.shuffle(self.indices)
+        return self
+
+    def __next__(self):
+        if self.current_index >= len(self.indices):
+            raise StopIteration
+
+        end_index = self.current_index + self.batch_size
+        if end_index > len(self.indices):
+            if self.drop_last:
+                raise StopIteration
+            else:
+                end_index = len(self.indices)
+
+        batch_indices = self.indices[self.current_index:end_index]
+        batch = [self.dataset[i] for i in batch_indices]
+        self.current_index = end_index
+
+        return self.collate_fn(batch)
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.dataset) // self.batch_size
+        else:
+            return math.ceil(len(self.dataset) / self.batch_size)
+
+    def collate_fn(self, batch):
+        if isinstance(batch[0], tuple):
+            if (len(batch[0])) == 2:
+                data, targets = zip(*batch)
+                data = mx.array(data)
+                targets = mx.array(targets)
+                return data, targets
+            if (len(batch[0])) == 4:
+                data, decoder_input, src_valid_len, targets = zip(*batch)
+                data = mx.array(data)
+                decoder_input = mx.array(decoder_input)
+                src_valid_len = mx.array(src_valid_len)
+                targets = mx.array(targets)
+                return data, decoder_input, src_valid_len, targets
+        return mx.array(batch)
+
+class MLX_Reshape(torch.nn.Module):
     """Defined in :numref:`sec_fashion_mnist`"""
-    """Load a buffer with the MNIST dataset.
+    def forward(self, x):
+        return x.permute(1, 2, 0)
 
-    If the data doesn't exist download it and save it for the next time.
+class FashionMNIST:
+    """The Fashion-MNIST dataset."""
+    def __init__(self, batch_size=64, resize=(28, 28)):
+        """Defined in :numref:`sec_fashion_mnist`"""
+        trans = transforms.Compose([transforms.Resize(resize),
+                                    transforms.ToTensor(),
+                                    MLX_Reshape()])
+        self.train = torchvision.datasets.FashionMNIST(
+            root="../data", train=True, transform=trans, download=True)
+        self.val = torchvision.datasets.FashionMNIST(
+            root="../data", train=False, transform=trans, download=True)
 
-    Args:
-        root (Path or str, optional): The directory to load/save the data. If
-            none is given the ``~/.cache/mlx.data/mnist`` is used.
-        train (bool): Load the training or test set.
-    """
-    def get_notebook_dir():
-        return Path(os.getcwd()).parent / 'data' / 'FashionMNIST'
+        train_data = np.array([np.array(self.train[i][0]) for i in range(len(self.train))])
+        train_targets = self.train.targets.numpy()
+        val_data = np.array([np.array(self.val[i][0]) for i in range(len(self.val))])
+        val_targets = self.val.targets.numpy()
 
-    if root is None:
-        root = get_notebook_dir()
-    else:
-        root = Path(root)
-
-    ensure_exists(root)
-
-    def download():
-        base_url = "http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/"
-        filename = [
-            [NamedTemporaryFile(), "training_images", "train-images-idx3-ubyte.gz"],
-            [NamedTemporaryFile(), "test_images", "t10k-images-idx3-ubyte.gz"],
-            [NamedTemporaryFile(), "training_labels", "train-labels-idx1-ubyte.gz"],
-            [NamedTemporaryFile(), "test_labels", "t10k-labels-idx1-ubyte.gz"],
-        ]
-
-        mnist = {}
-        for out_file, _, name in filename:
-            urlretrieve_with_progress(base_url + name, out_file.name)
-
-        for out_file, key, _ in filename[:2]:
-            with gzip.open(out_file.name, "rb") as f:
-                mnist[key] = np.frombuffer(f.read(), np.uint8, offset=16).reshape(
-                    -1, 28, 28, 1
-                )
-        for out_file, key, _ in filename[-2:]:
-            with gzip.open(out_file.name, "rb") as f:
-                mnist[key] = np.frombuffer(f.read(), np.uint8, offset=8)
-        train_set = [
-            {"image": mnist["training_images"][i], "label": mnist["training_labels"][i]}
-            for i in range(len(mnist["training_images"]))
-        ]
-        test_set = [
-            {"image": mnist["test_images"][i], "label": mnist["test_labels"][i]}
-            for i in range(len(mnist["test_images"]))
-        ]
-
-        with (root / "train.pkl").open("wb") as f:
-            pickle.dump(train_set, f)
-        with (root / "test.pkl").open("wb") as f:
-            pickle.dump(test_set, f)
-
-    if not (root / "test.pkl").is_file():
-        download()
-
-    pkl_file = (root / "train.pkl") if train else (root / "test.pkl")
-    with pkl_file.open("rb") as f:
-        return dx.buffer_from_vector(pickle.load(f))
+        self.train = d2l.Dataset(train_data, train_targets)
+        self.val = d2l.Dataset(val_data, val_targets)
 
 def get_fashion_mnist_labels(labels):
     """返回Fashion-MNIST数据集的文本标签
@@ -257,54 +298,15 @@ def show_images(imgs, num_rows, num_cols, titles=None, scale=1.5):
             ax.set_title(titles[i])
     return axes
 
-def get_dataloader_workers():
-    """使用4个进程来读取数据
-
-    Defined in :numref:`sec_fashion_mnist`"""
-    return 4
-
 def load_data_fashion_mnist(batch_size, resize=None):
     """Defined in :numref:`sec_fashion_mnist`"""
     """下载Fashion-MNIST数据集，然后将其加载到内存中
 
     Defined in :numref:`sec_fashion_mnist`"""
-    mnist_train = load_mnist(root=None, train=True)
-    mnist_test = load_mnist(root=None, train=False)
+    data = FashionMNIST()
 
-    train_iter = (
-        mnist_train
-        .to_stream()
-        .batch(batch_size)
-        .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-        .prefetch(1, 4) # use 4 threads
-    )
-
-    test_iter = (
-        mnist_test
-        .to_stream()
-        .batch(batch_size)
-        .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-        .prefetch(1, 4) # use 4 threads
-    )
-    if resize:
-        train_iter = (
-            mnist_train
-            .to_stream()
-            .batch(batch_size)
-            .image_resize("image", resize, resize) # image must be of type UInt8
-            .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-            .prefetch(1, 4) # use 4 threads
-        )
-        train_iter = (
-            mnist_test
-            .to_stream()
-            .batch(batch_size)
-            .image_resize("image", resize, resize) # image must be of type UInt8
-            .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-            .prefetch(1, 4) # use 4 threads
-        )
-
-    return train_iter, test_iter
+    return (d2l.DataLoader(data.train, batch_size, shuffle=True),
+            d2l.DataLoader(data.val, batch_size, shuffle=False))
 
 def accuracy(y_hat, y):
     """计算预测正确的数量
@@ -322,8 +324,7 @@ def evaluate_accuracy(net, data_iter, params):
     if isinstance(net, nn.Module):
         net.train(False)
     metric = Accumulator(2)  # 正确预测数、预测总数
-    for batch in data_iter:
-        X, y = mx.array(batch["image"]).reshape((-1, 28 * 28)), mx.array(batch["label"]) # reshape image to match the W's shape
+    for X, y in data_iter:
         if isinstance(net, nn.Module):
             metric.add(accuracy(net(X), y), y.size)
         else:
@@ -355,45 +356,31 @@ def train_epoch_ch3(net, train_iter, loss, updater, batch_size, params):
         net.train(True)
     # 训练损失总和、训练准确度总和、样本数
     metric = Accumulator(3)
-    if isinstance(train_iter, mlx.data._c.Stream):
-        for batch in train_iter:
-            X, y = mx.array(batch["image"]).reshape((-1, 28 * 28)), mx.array(batch["label"]) # reshape image to match the W's shape
-            # 计算梯度并更新参数
-            if isinstance(updater, optim.Optimizer):
-                # 使用PyTorch内置的优化器和损失函数
-                def loss_fn_mean(net, X, y):
-                    y_hat = net(X)
-                    return loss(y_hat, y, reduction="none").mean()
-                loss_and_grad_fn = nn.value_and_grad(net, loss_fn_mean)
-                l, grad = loss_and_grad_fn(net, X, y)
-                updater.update(net, grad)
-                mx.eval(net.parameters())
+        # 计算梯度并更新参数
+    for X, y in train_iter:
+        if isinstance(updater, optim.Optimizer):
+            # 使用PyTorch内置的优化器和损失函数
+            def loss_fn_mean(net, X, y):
                 y_hat = net(X)
-                l_sum = loss(y_hat, y).sum()
-                metric.add(float(l_sum.item()), accuracy(y_hat, y), y.size)
-            else:
-                # 使用定制的优化器和损失函数
-                def loss_fn_sum(params):
-                    y_hat = net(X, params)
-                    return loss(y_hat, y).sum()
-                loss_and_grad_fn = mx.value_and_grad(loss_fn_sum)
-                l, grad = loss_and_grad_fn(params)
-                updater(grad, X.shape[0])
-                mx.eval(params)
-                y_hat = net(X, params)
-                metric.add(float(l.item()), accuracy(y_hat, y), y.size)
-    else:
-        for X, y in train_iter:
-            def loss_fn(net, X, y):
-                y_hat = net(X)
-                return loss(y_hat, y, reduction="none").sum()
-            loss_and_grad_fn = nn.value_and_grad(net, loss_fn)
-            l, grads = loss_and_grad_fn(net, X, y)
-            updater.update(net, grads)
+                return loss(y_hat, y).mean()
+            loss_and_grad_fn = nn.value_and_grad(net, loss_fn_mean)
+            l, grad = loss_and_grad_fn(net, X, y)
+            updater.update(net, grad)
             mx.eval(net.parameters())
             y_hat = net(X)
-            l_sum = loss(y_hat, y, reduction="none").sum()
-            metric.add(float(l_sum.item()), d2l.accuracy(y_hat, y), y.size)
+            l_sum = loss(y_hat, y).sum()
+            metric.add(float(l_sum.item()), accuracy(y_hat, y), y.size)
+        else:
+            # 使用定制的优化器和损失函数
+            def loss_fn_sum(params):
+                y_hat = net(X, params)
+                return loss(y_hat, y).sum()
+            loss_and_grad_fn = mx.value_and_grad(loss_fn_sum)
+            l, grad = loss_and_grad_fn(params)
+            updater(grad, X.shape[0])
+            mx.eval(params)
+            y_hat = net(X, params)
+            metric.add(float(l.item()), accuracy(y_hat, y), y.size)
     # 返回训练损失和训练精度
     return metric[0] / metric[2], metric[1] / metric[2]
 
@@ -445,7 +432,6 @@ def train_ch3(net, train_iter, test_iter, loss, num_epochs, updater, batch_size,
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
                         legend=['train loss', 'train acc', 'test acc'])
     for epoch in range(num_epochs):
-        train_iter, test_iter = d2l.load_data_fashion_mnist(batch_size)
         train_metrics = train_epoch_ch3(net, train_iter, loss, updater, batch_size, params)
         test_acc = evaluate_accuracy(net, test_iter, params)
         animator.add(epoch + 1, train_metrics + (test_acc,))
@@ -458,8 +444,7 @@ def predict_ch3(net, test_iter, params, n=6):
     """Defined in :numref:`sec_softmax_scratch`"""
     """预测标签（定义见第3章）
     Defined in :numref:`sec_softmax_scratch`"""
-    for batch in test_iter:
-        X, y = mx.array(batch["image"]), mx.array(batch["label"])
+    for X, y in test_iter:
         break
     trues = d2l.get_fashion_mnist_labels(y)
     if isinstance(net, nn.Module):
@@ -545,31 +530,6 @@ DATA_HUB['kaggle_house_train'] = (
 DATA_HUB['kaggle_house_test'] = (
     DATA_URL + 'kaggle_house_pred_test.csv',
     'fa19780a7b011d9b009e8bff8e99922a8ee2eb90')
-
-def corr2d(X, K):  #@save
-    """计算二维互相关运算"""
-    h, w = K.shape
-    # 初始化输出数组
-    Y = mx.zeros((X.shape[0] - h + 1, X.shape[1] - w + 1))
-    for i in range(Y.shape[0]):
-        for j in range(Y.shape[1]):
-            # 进行元素乘法并求和
-            Y[i, j] = (X[i:i + h, j:j + w] * K).sum()
-    return Y
-
-def gpu(i=0):
-    """Get a GPU device.
-
-    Defined in :numref:`sec_use_gpu`"""
-    mx.set_default_device(mx.gpu)
-    return mx.default_device()
-
-
-def try_gpu(i=0):
-    """Return gpu(i) if exists, otherwise return cpu().
-
-    Defined in :numref:`sec_use_gpu`"""
-    return gpu(0)
 
 
 # Alias defined in config.ini
