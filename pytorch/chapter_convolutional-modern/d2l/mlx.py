@@ -154,7 +154,7 @@ def squared_loss(y_hat, y):
     """均方损失
 
     Defined in :numref:`sec_linear_scratch`"""
-    return (y_hat - y.reshape(y_hat.shape)) ** 2 / 2
+    return (y_hat - d2l.reshape(y, y_hat.shape)) ** 2 / 2
 
 def sgd(params, grads, lr, batch_size):
     """小批量随机梯度下降
@@ -174,77 +174,101 @@ def load_array(data_arrays, batch_size, is_train=True):
         ids = perm[s:s + batch_size]
         yield X[ids], y[ids]
 
-# Copyright © 2023 Apple Inc.
-import gzip
-import pickle
-from pathlib import Path
-from tempfile import NamedTemporaryFile
-from mlx import data as dx
-from mlx.data.datasets.common import ensure_exists, urlretrieve_with_progress
+class Dataset:
+    def __init__(self, *tensors):
+        """Defined in :numref:`sec_fashion_mnist`"""
+        assert all(
+            tensors[0].shape[0] == tensor.shape[0] for tensor in tensors
+        ), "Size mismatch between tensors"
+        self.tensors = tensors
 
+    def __getitem__(self, index):
+        return tuple(mx.array(tensor[index]) for tensor in self.tensors)
 
-def load_mnist(root=None, train=True):
+    def __len__(self):
+        return self.tensors[0].shape[0]
+
+class DataLoader:
+    def __init__(self, dataset, batch_size=1, shuffle=False, drop_last=False):
+        """Defined in :numref:`sec_fashion_mnist`"""
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.indices = list(range(len(dataset)))
+        self.current_index = 0
+        if self.shuffle:
+            random.shuffle(self.indices)
+
+    def __iter__(self):
+        self.current_index = 0
+        if self.shuffle:
+            random.shuffle(self.indices)
+        return self
+
+    def __next__(self):
+        if self.current_index >= len(self.indices):
+            raise StopIteration
+
+        end_index = self.current_index + self.batch_size
+        if end_index > len(self.indices):
+            if self.drop_last:
+                raise StopIteration
+            else:
+                end_index = len(self.indices)
+
+        batch_indices = self.indices[self.current_index:end_index]
+        batch = [self.dataset[i] for i in batch_indices]
+        self.current_index = end_index
+
+        return self.collate_fn(batch)
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.dataset) // self.batch_size
+        else:
+            return math.ceil(len(self.dataset) / self.batch_size)
+
+    def collate_fn(self, batch):
+        if isinstance(batch[0], tuple):
+            if (len(batch[0])) == 2:
+                data, targets = zip(*batch)
+                data = mx.array(data)
+                targets = mx.array(targets)
+                return data, targets
+            if (len(batch[0])) == 4:
+                data, decoder_input, src_valid_len, targets = zip(*batch)
+                data = mx.array(data)
+                decoder_input = mx.array(decoder_input)
+                src_valid_len = mx.array(src_valid_len)
+                targets = mx.array(targets)
+                return data, decoder_input, src_valid_len, targets
+        return mx.array(batch)
+
+class MLX_Reshape(torch.nn.Module):
     """Defined in :numref:`sec_fashion_mnist`"""
-    """Load a buffer with the MNIST dataset.
+    def forward(self, x):
+        return x.permute(1, 2, 0)
 
-    If the data doesn't exist download it and save it for the next time.
+class FashionMNIST:
+    """The Fashion-MNIST dataset."""
+    def __init__(self, batch_size=64, resize=(28, 28)):
+        """Defined in :numref:`sec_fashion_mnist`"""
+        trans = transforms.Compose([transforms.Resize(resize),
+                                    transforms.ToTensor(),
+                                    MLX_Reshape()])
+        self.train = torchvision.datasets.FashionMNIST(
+            root="../data", train=True, transform=trans, download=True)
+        self.val = torchvision.datasets.FashionMNIST(
+            root="../data", train=False, transform=trans, download=True)
 
-    Args:
-        root (Path or str, optional): The directory to load/save the data. If
-            none is given the ``~/.cache/mlx.data/mnist`` is used.
-        train (bool): Load the training or test set.
-    """
-    def get_notebook_dir():
-        return Path(os.getcwd()).parent / 'data' / 'FashionMNIST'
+        train_data = np.array([np.array(self.train[i][0]) for i in range(len(self.train))])
+        train_targets = self.train.targets.numpy()
+        val_data = np.array([np.array(self.val[i][0]) for i in range(len(self.val))])
+        val_targets = self.val.targets.numpy()
 
-    if root is None:
-        root = get_notebook_dir()
-    else:
-        root = Path(root)
-
-    ensure_exists(root)
-
-    def download():
-        base_url = "http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/"
-        filename = [
-            [NamedTemporaryFile(), "training_images", "train-images-idx3-ubyte.gz"],
-            [NamedTemporaryFile(), "test_images", "t10k-images-idx3-ubyte.gz"],
-            [NamedTemporaryFile(), "training_labels", "train-labels-idx1-ubyte.gz"],
-            [NamedTemporaryFile(), "test_labels", "t10k-labels-idx1-ubyte.gz"],
-        ]
-
-        mnist = {}
-        for out_file, _, name in filename:
-            urlretrieve_with_progress(base_url + name, out_file.name)
-
-        for out_file, key, _ in filename[:2]:
-            with gzip.open(out_file.name, "rb") as f:
-                mnist[key] = np.frombuffer(f.read(), np.uint8, offset=16).reshape(
-                    -1, 28, 28, 1
-                )
-        for out_file, key, _ in filename[-2:]:
-            with gzip.open(out_file.name, "rb") as f:
-                mnist[key] = np.frombuffer(f.read(), np.uint8, offset=8)
-        train_set = [
-            {"image": mnist["training_images"][i], "label": mnist["training_labels"][i]}
-            for i in range(len(mnist["training_images"]))
-        ]
-        test_set = [
-            {"image": mnist["test_images"][i], "label": mnist["test_labels"][i]}
-            for i in range(len(mnist["test_images"]))
-        ]
-
-        with (root / "train.pkl").open("wb") as f:
-            pickle.dump(train_set, f)
-        with (root / "test.pkl").open("wb") as f:
-            pickle.dump(test_set, f)
-
-    if not (root / "test.pkl").is_file():
-        download()
-
-    pkl_file = (root / "train.pkl") if train else (root / "test.pkl")
-    with pkl_file.open("rb") as f:
-        return dx.buffer_from_vector(pickle.load(f))
+        self.train = d2l.Dataset(train_data, train_targets)
+        self.val = d2l.Dataset(val_data, val_targets)
 
 def get_fashion_mnist_labels(labels):
     """返回Fashion-MNIST数据集的文本标签
@@ -274,54 +298,15 @@ def show_images(imgs, num_rows, num_cols, titles=None, scale=1.5):
             ax.set_title(titles[i])
     return axes
 
-def get_dataloader_workers():
-    """使用4个进程来读取数据
-
-    Defined in :numref:`sec_fashion_mnist`"""
-    return 4
-
 def load_data_fashion_mnist(batch_size, resize=None):
     """Defined in :numref:`sec_fashion_mnist`"""
     """下载Fashion-MNIST数据集，然后将其加载到内存中
 
     Defined in :numref:`sec_fashion_mnist`"""
-    mnist_train = load_mnist(root=None, train=True)
-    mnist_test = load_mnist(root=None, train=False)
+    data = FashionMNIST()
 
-    train_iter = (
-        mnist_train
-        .to_stream()
-        .batch(batch_size)
-        .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-        .prefetch(1, 4) # use 4 threads
-    )
-
-    test_iter = (
-        mnist_test
-        .to_stream()
-        .batch(batch_size)
-        .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-        .prefetch(1, 4) # use 4 threads
-    )
-    if resize:
-        train_iter = (
-            mnist_train
-            .to_stream()
-            .batch(batch_size)
-            .image_resize("image", resize, resize) # image must be of type UInt8
-            .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-            .prefetch(1, 4) # use 4 threads
-        )
-        train_iter = (
-            mnist_test
-            .to_stream()
-            .batch(batch_size)
-            .image_resize("image", resize, resize) # image must be of type UInt8
-            .key_transform("image", lambda x: x.astype("float32") / 255) # 通过ToTensor实例将图像数据从PIL类型变换成32位浮点数格式，并除以255使得所有像素的数值均在0～1之间
-            .prefetch(1, 4) # use 4 threads
-        )
-
-    return train_iter, test_iter
+    return (d2l.DataLoader(data.train, batch_size, shuffle=True),
+            d2l.DataLoader(data.val, batch_size, shuffle=False))
 
 def accuracy(y_hat, y):
     """计算预测正确的数量
@@ -339,8 +324,7 @@ def evaluate_accuracy(net, data_iter, params):
     if isinstance(net, nn.Module):
         net.train(False)
     metric = Accumulator(2)  # 正确预测数、预测总数
-    for batch in data_iter:
-        X, y = mx.array(batch["image"]).reshape((-1, 28 * 28)), mx.array(batch["label"]) # reshape image to match the W's shape
+    for X, y in data_iter:
         if isinstance(net, nn.Module):
             metric.add(accuracy(net(X), y), y.size)
         else:
@@ -372,45 +356,31 @@ def train_epoch_ch3(net, train_iter, loss, updater, batch_size, params):
         net.train(True)
     # 训练损失总和、训练准确度总和、样本数
     metric = Accumulator(3)
-    if isinstance(train_iter, mlx.data._c.Stream):
-        for batch in train_iter:
-            X, y = mx.array(batch["image"]).reshape((-1, 28 * 28)), mx.array(batch["label"]) # reshape image to match the W's shape
-            # 计算梯度并更新参数
-            if isinstance(updater, optim.Optimizer):
-                # 使用PyTorch内置的优化器和损失函数
-                def loss_fn_mean(net, X, y):
-                    y_hat = net(X)
-                    return loss(y_hat, y, reduction="none").mean()
-                loss_and_grad_fn = nn.value_and_grad(net, loss_fn_mean)
-                l, grad = loss_and_grad_fn(net, X, y)
-                updater.update(net, grad)
-                mx.eval(net.parameters())
+        # 计算梯度并更新参数
+    for X, y in train_iter:
+        if isinstance(updater, optim.Optimizer):
+            # 使用PyTorch内置的优化器和损失函数
+            def loss_fn_mean(net, X, y):
                 y_hat = net(X)
-                l_sum = loss(y_hat, y).sum()
-                metric.add(float(l_sum.item()), accuracy(y_hat, y), y.size)
-            else:
-                # 使用定制的优化器和损失函数
-                def loss_fn_sum(params):
-                    y_hat = net(X, params)
-                    return loss(y_hat, y).sum()
-                loss_and_grad_fn = mx.value_and_grad(loss_fn_sum)
-                l, grad = loss_and_grad_fn(params)
-                updater(grad, X.shape[0])
-                mx.eval(params)
-                y_hat = net(X, params)
-                metric.add(float(l.item()), accuracy(y_hat, y), y.size)
-    else:
-        for X, y in train_iter:
-            def loss_fn(net, X, y):
-                y_hat = net(X)
-                return loss(y_hat, y, reduction="none").sum()
-            loss_and_grad_fn = nn.value_and_grad(net, loss_fn)
-            l, grads = loss_and_grad_fn(net, X, y)
-            updater.update(net, grads)
+                return loss(y_hat, y).mean()
+            loss_and_grad_fn = nn.value_and_grad(net, loss_fn_mean)
+            l, grad = loss_and_grad_fn(net, X, y)
+            updater.update(net, grad)
             mx.eval(net.parameters())
             y_hat = net(X)
-            l_sum = loss(y_hat, y, reduction="none").sum()
-            metric.add(float(l_sum.item()), d2l.accuracy(y_hat, y), y.size)
+            l_sum = loss(y_hat, y).sum()
+            metric.add(float(l_sum.item()), accuracy(y_hat, y), y.size)
+        else:
+            # 使用定制的优化器和损失函数
+            def loss_fn_sum(params):
+                y_hat = net(X, params)
+                return loss(y_hat, y).sum()
+            loss_and_grad_fn = mx.value_and_grad(loss_fn_sum)
+            l, grad = loss_and_grad_fn(params)
+            updater(grad, X.shape[0])
+            mx.eval(params)
+            y_hat = net(X, params)
+            metric.add(float(l.item()), accuracy(y_hat, y), y.size)
     # 返回训练损失和训练精度
     return metric[0] / metric[2], metric[1] / metric[2]
 
@@ -462,7 +432,6 @@ def train_ch3(net, train_iter, test_iter, loss, num_epochs, updater, batch_size,
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs], ylim=[0.3, 0.9],
                         legend=['train loss', 'train acc', 'test acc'])
     for epoch in range(num_epochs):
-        train_iter, test_iter = d2l.load_data_fashion_mnist(batch_size)
         train_metrics = train_epoch_ch3(net, train_iter, loss, updater, batch_size, params)
         test_acc = evaluate_accuracy(net, test_iter, params)
         animator.add(epoch + 1, train_metrics + (test_acc,))
@@ -475,8 +444,7 @@ def predict_ch3(net, test_iter, params, n=6):
     """Defined in :numref:`sec_softmax_scratch`"""
     """预测标签（定义见第3章）
     Defined in :numref:`sec_softmax_scratch`"""
-    for batch in test_iter:
-        X, y = mx.array(batch["image"]), mx.array(batch["label"])
+    for X, y in test_iter:
         break
     trues = d2l.get_fashion_mnist_labels(y)
     if isinstance(net, nn.Module):
@@ -632,162 +600,6 @@ def train_ch6(net, train_iter, test_iter, num_epochs, lr):
         print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
             f'test acc {test_acc:.3f}')
         print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec ')
-
-d2l.DATA_HUB['time_machine'] = (d2l.DATA_URL + 'timemachine.txt',
-                                '090b5e7e70c295757f55df93cb0a180b9691891a')
-
-def read_time_machine():
-    """将时间机器数据集加载到文本行的列表中
-
-    Defined in :numref:`sec_text_preprocessing`"""
-    with open(d2l.download('time_machine'), 'r') as f:
-        lines = f.readlines()
-    return [re.sub('[^A-Za-z]+', ' ', line).strip().lower() for line in lines]
-
-def tokenize(lines, token='word'):
-    """将文本行拆分为单词或字符词元
-
-    Defined in :numref:`sec_text_preprocessing`"""
-    if token == 'word':
-        return [line.split() for line in lines]
-    elif token == 'char':
-        return [list(line) for line in lines]
-    else:
-        print('错误：未知词元类型：' + token)
-
-class Vocab:
-    """文本词表"""
-    def __init__(self, tokens=None, min_freq=0, reserved_tokens=None):
-        """Defined in :numref:`sec_text_preprocessing`"""
-        if tokens is None:
-            tokens = []
-        if reserved_tokens is None:
-            reserved_tokens = []
-        # 按出现频率排序
-        counter = count_corpus(tokens)
-        self._token_freqs = sorted(counter.items(), key=lambda x: x[1],
-                                   reverse=True)
-        # 未知词元的索引为0
-        self.idx_to_token = ['<unk>'] + reserved_tokens
-        self.token_to_idx = {token: idx
-                             for idx, token in enumerate(self.idx_to_token)}
-        for token, freq in self._token_freqs:
-            if freq < min_freq:
-                break
-            if token not in self.token_to_idx:
-                self.idx_to_token.append(token)
-                self.token_to_idx[token] = len(self.idx_to_token) - 1
-
-    def __len__(self):
-        return len(self.idx_to_token)
-
-    def __getitem__(self, tokens):
-        if not isinstance(tokens, (list, tuple)):
-            return self.token_to_idx.get(tokens, self.unk)
-        return [self.__getitem__(token) for token in tokens]
-
-    def to_tokens(self, indices):
-        if not isinstance(indices, (list, tuple)):
-            return self.idx_to_token[indices]
-        return [self.idx_to_token[index] for index in indices]
-
-    @property
-    def unk(self):  # 未知词元的索引为0
-        return 0
-
-    @property
-    def token_freqs(self):
-        return self._token_freqs
-
-def count_corpus(tokens):
-    """统计词元的频率
-
-    Defined in :numref:`sec_text_preprocessing`"""
-    # 这里的tokens是1D列表或2D列表
-    if len(tokens) == 0 or isinstance(tokens[0], list):
-        # 将词元列表展平成一个列表
-        tokens = [token for line in tokens for token in line]
-    return collections.Counter(tokens)
-
-def load_corpus_time_machine(max_tokens=-1):
-    """返回时光机器数据集的词元索引列表和词表
-
-    Defined in :numref:`sec_text_preprocessing`"""
-    lines = read_time_machine()
-    tokens = tokenize(lines, 'char')
-    vocab = Vocab(tokens)
-    # 因为时光机器数据集中的每个文本行不一定是一个句子或一个段落，
-    # 所以将所有文本行展平到一个列表中
-    corpus = [vocab[token] for line in tokens for token in line]
-    if max_tokens > 0:
-        corpus = corpus[:max_tokens]
-    return corpus, vocab
-
-def seq_data_iter_random(corpus, batch_size, num_steps):
-    """使用随机抽样生成一个小批量子序列
-
-    Defined in :numref:`sec_language_model`"""
-    # 从随机偏移量开始对序列进行分区，随机范围包括num_steps-1
-    start_idx = np.random.randint(0, num_steps - 1)
-    corpus = corpus[start_idx:]
-    # 减去1，是因为我们需要考虑标签
-    num_subseqs = (len(corpus) - 1) // num_steps
-    # 长度为num_steps的子序列的起始索引
-    initial_indices = list(range(0, num_subseqs * num_steps, num_steps))
-    # 在随机抽样的迭代过程中，
-    # 来自两个相邻的、随机的、小批量中的子序列不一定在原始序列上相邻
-    random.shuffle(initial_indices)
-
-    def data(pos):
-        # 返回从pos位置开始的长度为num_steps的序列
-        return corpus[pos: pos + num_steps]
-
-    num_batches = num_subseqs // batch_size
-    for i in range(0, batch_size * num_batches, batch_size):
-        # 在这里，initial_indices包含子序列的随机起始索引
-        initial_indices_per_batch = initial_indices[i: i + batch_size]
-        X = [data(j) for j in initial_indices_per_batch]
-        Y = [data(j + 1) for j in initial_indices_per_batch]
-        yield mx.array(X), mx.array(Y)
-
-def seq_data_iter_sequential(corpus, batch_size, num_steps):
-    """使用顺序分区生成一个小批量子序列
-
-    Defined in :numref:`sec_language_model`"""
-    # 从随机偏移量开始划分序列
-    offset = np.random.randint(0, num_steps)
-    num_tokens = ((len(corpus) - offset - 1) // batch_size) * batch_size
-    Xs = mx.array(corpus[offset: offset + num_tokens])
-    Ys = mx.array(corpus[offset + 1: offset + 1 + num_tokens])
-    Xs, Ys = Xs.reshape(batch_size, -1), Ys.reshape(batch_size, -1)
-    num_batches = Xs.shape[1] // num_steps
-    for i in range(0, num_steps * num_batches, num_steps):
-        X = Xs[:, i: i + num_steps]
-        Y = Ys[:, i: i + num_steps]
-        yield X, Y
-
-class SeqDataLoader:
-    """加载序列数据的迭代器"""
-    def __init__(self, batch_size, num_steps, use_random_iter, max_tokens):
-        """Defined in :numref:`sec_language_model`"""
-        if use_random_iter:
-            self.data_iter_fn = d2l.seq_data_iter_random
-        else:
-            self.data_iter_fn = d2l.seq_data_iter_sequential
-        self.corpus, self.vocab = d2l.load_corpus_time_machine(max_tokens)
-        self.batch_size, self.num_steps = batch_size, num_steps
-
-    def __iter__(self):
-        return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
-
-def load_data_time_machine(batch_size, num_steps,
-                           use_random_iter=False, max_tokens=10000):
-    """返回时光机器数据集的迭代器和词表
-
-    Defined in :numref:`sec_language_model`"""
-    data_iter = SeqDataLoader(
-        batch_size, num_steps, use_random_iter, max_tokens)
-    return data_iter, data_iter.vocab
 
 
 # Alias defined in config.ini
