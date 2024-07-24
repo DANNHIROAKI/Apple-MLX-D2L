@@ -303,7 +303,8 @@ def load_data_fashion_mnist(batch_size, resize=None):
     """下载Fashion-MNIST数据集，然后将其加载到内存中
 
     Defined in :numref:`sec_fashion_mnist`"""
-    data = FashionMNIST()
+    data = FashionMNIST(batch_size, resize)
+    print("here!")
 
     return (d2l.DataLoader(data.train, batch_size, shuffle=True),
             d2l.DataLoader(data.val, batch_size, shuffle=False))
