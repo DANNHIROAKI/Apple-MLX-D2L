@@ -67,13 +67,12 @@ king@cse.cuhk.edu.hk
   For Interested PhD Candidates For interested candidates, please send your CV, a publication list, and a brief (1-2 page) statement of your research interests to Prof. Irwin King
   ```
 
-# Jimmy Ho Man Lee
+# Patrick P. C. Lee
 
-jlee@cse.cuhk.edu.hk
+- 头衔：教授，计算机学院副院长
+- 学历：BEng (CUHK), MPhil (CUHK), PhD (Columbia)
+- 方向：分布式系统
+- 没有明确说招收博士，但是每年都招2-3名博士
 
-- 头衔：Professor, Distinguished Fellow of HKCS, Fellow of HKIE
-
-- 学历；B.Math., M.Math. (Waterloo), Ph.D. (Victoria, Canada)
-
-
+# 
 
