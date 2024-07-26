@@ -166,7 +166,33 @@ mhenryxu@cse.cuhk.edu.hk
 - 头衔：副教授
 - 学历：B.Eng. (CUHK), M.A.Sc., Ph.D. (Toronto)
 - 方向：big data systems and data center networks，机器学习系统，网络
-- ==明确说明2025秋天招收1-2名博士==
+- ==明确说明2025秋天招收1-2名博士== 
+
+## 18. XU Qiang
+
+qxu@cse.cuhk.edu.hk
+
+- 头衔：教授
+- 学历：B.E. (BUPT北邮), M.E. (BUPT), Ph.D. (McMaster)
+- 方向：人工智能，文本到图像的生成，人工智能电路
+- ==明确说明招收几个博士==
+
+## 19. Ming-Chang Yang
+
+mcyang@cse.cuhk.edu.hk
+
+- 头衔：副教授
+- 学历：B.S. (NCTU新竹交大), Master (NTU国立台湾大学), Ph.D. (NTU)
+- 方向：非易失性内存和存储技术、内存和存储系统
+
+## 20. Bei Yu
+
+byu@cse.cuhk.edu.hk
+
+- 头衔：副教授
+- 学历：M.E. (Tsinghua), Ph.D. (Texas)
+- 方向：电子设计自动化(EDA)，计算机视觉
+- ==明确说明长期招收博士==
 
 
 
