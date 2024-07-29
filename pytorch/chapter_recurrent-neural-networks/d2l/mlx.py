@@ -713,6 +713,16 @@ def load_data_time_machine(batch_size, num_steps,
         batch_size, num_steps, use_random_iter, max_tokens)
     return data_iter, data_iter.vocab
 
+def mlx_one_hot(array, num_classes):
+    """Defined in :numref:`sec_rnn-scratch`"""
+    original_shape = array.shape
+    array = array.reshape((-1,))
+    array = array.astype(mx.int32)
+    one_hot_matrix = mx.zeros((array.shape[0], num_classes))
+    one_hot_matrix[mx.arange(array.shape[0]), array] = 1
+    one_hot_matrix = one_hot_matrix.reshape((*original_shape, num_classes))
+    return one_hot_matrix
+
 
 # Alias defined in config.ini
 nn_Module = nn.Module
