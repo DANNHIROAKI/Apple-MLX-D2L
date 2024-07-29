@@ -554,53 +554,44 @@ def evaluate_accuracy_gpu(net, data_iter):
         metric.add(d2l.accuracy(net(X), y), y.size)
     return metric[0] / metric[1]
 
-def train_ch6(net, train_iter, test_iter, num_epochs, lr):
-    """用GPU训练模型(在第六章定义)
 
-    Defined in :numref:`sec_lenet`"""
-    # 初始化权重
-    def init_weights(array):
-        if array.ndim > 1:
-            weight_fn = nn.init.glorot_uniform()
-            array = weight_fn(array)
-        return array
-    for module in net.layers:
-        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d):
-            module.update(mlx.utils.tree_map(lambda x: init_weights(x), module.parameters()))
-    print(mx.default_device())
+#@tab mlx
+#@save
+def train_epoch_ch6(net, train_iter, lr):
+    """训练模型一个迭代周期(在第六章定义)"""
     optimizer = optim.SGD(learning_rate=lr)
     loss = nn.losses.cross_entropy
+    # 训练损失之和，训练准确率之和，样本数
+    metric = d2l.Accumulator(3)
+    if isinstance(net, nn.Module):
+        net.train(True)
+    for X, y in train_iter:
+        # 使用PyTorch内置的优化器和损失函数
+        def loss_fn(net, X, y):
+            y_hat = net(X)
+            return loss(y_hat, y, reduction="none").mean()
+        loss_and_grad_fn = nn.value_and_grad(net, loss_fn)
+        l, grad = loss_and_grad_fn(net, X, y)
+        optimizer.update(net, grad)
+        mx.eval(net.parameters())
+        y_hat = net(X)
+        metric.add(l.item() * X.shape[0], d2l.accuracy(y_hat, y), X.shape[0])
+        train_l = metric[0] / metric[2]
+        train_acc = metric[1] / metric[2]
+    print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, ')
+    return train_l, train_acc
+
+
+#@tab mlx
+#@save
+def train_ch6(net, train_iter, test_iter, num_epochs, lr):
+    """训练模型(在第六章定义)"""
     animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs],
                             legend=['train loss', 'train acc', 'test acc'])
-    timer, num_batches = d2l.Timer(), len(train_iter)
-    # num_batches = len(train_iter)
     for epoch in range(num_epochs):
-        # 训练损失之和，训练准确率之和，样本数
-        metric = d2l.Accumulator(3)
-        if isinstance(net, nn.Module):
-            net.train(True)
-        for i, (X, y) in enumerate(train_iter):
-            # 使用PyTorch内置的优化器和损失函数
-            def loss_fn(net, X, y):
-                y_hat = net(X)
-                return loss(y_hat, y, reduction="none").mean()
-            loss_and_grad_fn = nn.value_and_grad(net, loss_fn)
-            l, grad = loss_and_grad_fn(net, X, y)
-            optimizer.update(net, grad)
-            mx.eval(net.parameters())
-            y_hat = net(X)
-            metric.add(l.item() * X.shape[0], d2l.accuracy(y_hat, y), X.shape[0])
-            timer.stop()
-            train_l = metric[0] / metric[2]
-            train_acc = metric[1] / metric[2]
-            test_acc = evaluate_accuracy_gpu(net, test_iter)
-            if (i + 1) % (num_batches // 5) == 0 or i == num_batches - 1:
-                animator.add(epoch + (i + 1) / num_batches, (train_l, train_acc, test_acc))
-            # test_acc = evaluate_accuracy_gpu(net, test_iter)
-            # animator.add(epoch + 1, (None, None, test_acc))
-        print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
-            f'test acc {test_acc:.3f}')
-        print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec ')
+        train_metrics = train_epoch_ch6(net, train_iter, lr)
+        test_acc = evaluate_accuracy_gpu(net, test_iter)
+        animator.add(epoch + 1, train_metrics + (test_acc,))
 
 
 # Alias defined in config.ini
