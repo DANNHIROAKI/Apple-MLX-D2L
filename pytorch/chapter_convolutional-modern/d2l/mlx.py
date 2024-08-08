@@ -554,6 +554,7 @@ def evaluate_accuracy_gpu(net, data_iter):
     return metric[0] / metric[1]
 
 def train_ch6(net, train_iter, test_iter, num_epochs, lr):
+    """Defined in :numref:`sec_lenet`"""
     """用GPU训练模型(在第六章定义)
 
     Defined in :numref:`sec_lenet`"""
@@ -563,7 +564,7 @@ def train_ch6(net, train_iter, test_iter, num_epochs, lr):
             weight_fn = nn.init.glorot_uniform()
             array = weight_fn(array)
         return array
-    for module in net.layers:
+    for module in net.modules():
         if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d):
             module.update(mlx.utils.tree_map(lambda x: init_weights(x), module.parameters()))
 
@@ -598,6 +599,317 @@ def train_ch6(net, train_iter, test_iter, num_epochs, lr):
         print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
             f'test acc {test_acc:.3f}')
         print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec ')
+
+d2l.DATA_HUB['time_machine'] = (d2l.DATA_URL + 'timemachine.txt',
+                                '090b5e7e70c295757f55df93cb0a180b9691891a')
+
+def read_time_machine():
+    """将时间机器数据集加载到文本行的列表中
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    with open(d2l.download('time_machine'), 'r') as f:
+        lines = f.readlines()
+    return [re.sub('[^A-Za-z]+', ' ', line).strip().lower() for line in lines]
+
+def tokenize(lines, token='word'):
+    """将文本行拆分为单词或字符词元
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    if token == 'word':
+        return [line.split() for line in lines]
+    elif token == 'char':
+        return [list(line) for line in lines]
+    else:
+        print('错误：未知词元类型：' + token)
+
+class Vocab:
+    """文本词表"""
+    def __init__(self, tokens=None, min_freq=0, reserved_tokens=None):
+        """Defined in :numref:`sec_text_preprocessing`"""
+        if tokens is None:
+            tokens = []
+        if reserved_tokens is None:
+            reserved_tokens = []
+        # 按出现频率排序
+        counter = count_corpus(tokens)
+        self._token_freqs = sorted(counter.items(), key=lambda x: x[1],
+                                   reverse=True)
+        # 未知词元的索引为0
+        self.idx_to_token = ['<unk>'] + reserved_tokens
+        self.token_to_idx = {token: idx
+                             for idx, token in enumerate(self.idx_to_token)}
+        for token, freq in self._token_freqs:
+            if freq < min_freq:
+                break
+            if token not in self.token_to_idx:
+                self.idx_to_token.append(token)
+                self.token_to_idx[token] = len(self.idx_to_token) - 1
+
+    def __len__(self):
+        return len(self.idx_to_token)
+
+    def __getitem__(self, tokens):
+        if not isinstance(tokens, (list, tuple)):
+            return self.token_to_idx.get(tokens, self.unk)
+        return [self.__getitem__(token) for token in tokens]
+
+    def to_tokens(self, indices):
+        if not isinstance(indices, (list, tuple)):
+            return self.idx_to_token[indices]
+        return [self.idx_to_token[index] for index in indices]
+
+    @property
+    def unk(self):  # 未知词元的索引为0
+        return 0
+
+    @property
+    def token_freqs(self):
+        return self._token_freqs
+
+def count_corpus(tokens):
+    """统计词元的频率
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    # 这里的tokens是1D列表或2D列表
+    if len(tokens) == 0 or isinstance(tokens[0], list):
+        # 将词元列表展平成一个列表
+        tokens = [token for line in tokens for token in line]
+    return collections.Counter(tokens)
+
+def load_corpus_time_machine(max_tokens=-1):
+    """返回时光机器数据集的词元索引列表和词表
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    lines = read_time_machine()
+    tokens = tokenize(lines, 'char')
+    vocab = Vocab(tokens)
+    # 因为时光机器数据集中的每个文本行不一定是一个句子或一个段落，
+    # 所以将所有文本行展平到一个列表中
+    corpus = [vocab[token] for line in tokens for token in line]
+    if max_tokens > 0:
+        corpus = corpus[:max_tokens]
+    return corpus, vocab
+
+def seq_data_iter_random(corpus, batch_size, num_steps):
+    """使用随机抽样生成一个小批量子序列
+
+    Defined in :numref:`sec_language_model`"""
+    # 从随机偏移量开始对序列进行分区，随机范围包括num_steps-1
+    start_idx = np.random.randint(0, num_steps - 1)
+    corpus = corpus[start_idx:]
+    # 减去1，是因为我们需要考虑标签
+    num_subseqs = (len(corpus) - 1) // num_steps
+    # 长度为num_steps的子序列的起始索引
+    initial_indices = list(range(0, num_subseqs * num_steps, num_steps))
+    # 在随机抽样的迭代过程中，
+    # 来自两个相邻的、随机的、小批量中的子序列不一定在原始序列上相邻
+    random.shuffle(initial_indices)
+
+    def data(pos):
+        # 返回从pos位置开始的长度为num_steps的序列
+        return corpus[pos: pos + num_steps]
+
+    num_batches = num_subseqs // batch_size
+    for i in range(0, batch_size * num_batches, batch_size):
+        # 在这里，initial_indices包含子序列的随机起始索引
+        initial_indices_per_batch = initial_indices[i: i + batch_size]
+        X = [data(j) for j in initial_indices_per_batch]
+        Y = [data(j + 1) for j in initial_indices_per_batch]
+        yield mx.array(X), mx.array(Y)
+
+def seq_data_iter_sequential(corpus, batch_size, num_steps):
+    """使用顺序分区生成一个小批量子序列
+
+    Defined in :numref:`sec_language_model`"""
+    # 从随机偏移量开始划分序列
+    offset = np.random.randint(0, num_steps)
+    num_tokens = ((len(corpus) - offset - 1) // batch_size) * batch_size
+    Xs = mx.array(corpus[offset: offset + num_tokens])
+    Ys = mx.array(corpus[offset + 1: offset + 1 + num_tokens])
+    Xs, Ys = Xs.reshape(batch_size, -1), Ys.reshape(batch_size, -1)
+    num_batches = Xs.shape[1] // num_steps
+    for i in range(0, num_steps * num_batches, num_steps):
+        X = Xs[:, i: i + num_steps]
+        Y = Ys[:, i: i + num_steps]
+        yield X, Y
+
+class SeqDataLoader:
+    """加载序列数据的迭代器"""
+    def __init__(self, batch_size, num_steps, use_random_iter, max_tokens):
+        """Defined in :numref:`sec_language_model`"""
+        if use_random_iter:
+            self.data_iter_fn = d2l.seq_data_iter_random
+        else:
+            self.data_iter_fn = d2l.seq_data_iter_sequential
+        self.corpus, self.vocab = d2l.load_corpus_time_machine(max_tokens)
+        self.batch_size, self.num_steps = batch_size, num_steps
+
+    def __iter__(self):
+        return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
+
+def load_data_time_machine(batch_size, num_steps,
+                           use_random_iter=False, max_tokens=10000):
+    """返回时光机器数据集的迭代器和词表
+
+    Defined in :numref:`sec_language_model`"""
+    data_iter = SeqDataLoader(
+        batch_size, num_steps, use_random_iter, max_tokens)
+    return data_iter, data_iter.vocab
+
+def mlx_one_hot(array, num_classes):
+    """Defined in :numref:`sec_rnn-scratch`
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    original_shape = array.shape
+    array = array.reshape((-1,))
+    array = array.astype(mx.int32)
+    one_hot_matrix = mx.zeros((array.shape[0], num_classes))
+    one_hot_matrix[mx.arange(array.shape[0]), array] = 1
+    one_hot_matrix = one_hot_matrix.reshape((*original_shape, num_classes))
+    return one_hot_matrix
+
+class RNNModelScratch(nn.Module):
+    """从零开始实现的循环神经网络模型
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    def __init__(self, vocab_size, num_hiddens,
+                 get_params, init_state, forward_fn):
+        self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
+        self.params = get_params(vocab_size, num_hiddens)
+        self.init_state, self.forward_fn = init_state, forward_fn
+        self._no_grad = set()
+
+    def __call__(self, X, state):
+        X = mlx_one_hot(X.T, self.vocab_size).astype(mx.float32)
+        return self.forward_fn(X, state, self.params)
+
+    def begin_state(self, batch_size):
+        return self.init_state(batch_size, self.num_hiddens)
+
+def predict_ch8(prefix, num_preds, net, vocab):
+    """在prefix后面生成新字符
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    state = net.begin_state(batch_size=1)
+    outputs = [vocab[prefix[0]]]
+    get_input = lambda: mx.array([outputs[-1]]).reshape((1, 1))
+    for y in prefix[1:]:  # 预热期
+        _, state = net(get_input(), state)
+        outputs.append(vocab[y])
+    for _ in range(num_preds):  # 预测num_preds步
+        y, state = net(get_input(), state)
+        # 使用 mx.argmax 并转换为 int
+        pred = int(mx.argmax(y, axis=1).item())
+        outputs.append(pred)
+    return ''.join([vocab.idx_to_token[i] for i in outputs])
+
+def grad_clipping(params, theta):
+    """裁剪梯度
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    if isinstance(params[0], nn.Parameter):
+        norm = mx.sqrt(sum(mx.sum(p.grad ** 2) for p in params if p.grad is not None))
+        if norm > theta:
+            for param in params:
+                if param.grad is not None:
+                    param.grad[:] *= theta / norm
+    else:
+        norm = mx.sqrt(sum(mx.sum(p.grad ** 2) for p in params))
+        if norm > theta:
+            for param in params:
+                param.grad[:] *= theta / norm
+
+def train_epoch_ch8(net, train_iter, loss, updater, use_random_iter):
+    """训练模型一个迭代周期(在第六章定义)
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    # 训练损失之和，训练准确率之和，样本数
+    state, timer = None, d2l.Timer()
+    metric = d2l.Accumulator(2)
+    if isinstance(net, nn.Module):
+        net.train(True)
+    for X, y in train_iter:
+        # 使用PyTorch内置的优化器和损失函数
+        if state is None or use_random_iter:
+            # 在第一次迭代或使用随机抽样时初始化state
+            state = net.begin_state(batch_size=X.shape[0])
+        def loss_fn(net, X, state, y):
+            y_hat, state = net(X, state)
+            y = y.T.reshape((-1,))
+            return loss(y_hat, y, reduction="none").mean()
+        loss_and_grad_fn = nn.value_and_grad(net, loss_fn)
+        l, grad = loss_and_grad_fn(net, X, state, y)
+        # grad_clipping(net.params, 1)
+        updater.update(net, grad)
+        _,state = net(X, state)
+        mx.eval(net.parameters())
+        metric.add(l.item() * y.size, y.size)
+    print(f"{metric[0]:<20} {metric[1]:<10} {timer.stop():<10}")
+    return math.exp(metric[0] / metric[1]), metric[1] / timer.stop()
+
+def train_ch8(net, train_iter, vocab, lr, num_epochs, use_random_iter=False):
+    """训练模型（定义见第8章）
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    loss = nn.losses.cross_entropy
+    animator = d2l.Animator(xlabel='epoch', ylabel='perplexity',
+                            legend=['train'], xlim=[10, num_epochs])
+    # 初始化
+    if isinstance(net, nn.Module):
+        # updater = optim.SGD(learning_rate=lr)
+        updater = optim.Adam(learning_rate=0.0005*lr)
+    else:
+        updater = lambda batch_size: d2l.sgd(net.params, lr, batch_size)
+    predict = lambda prefix: predict_ch8(prefix, 50, net, vocab)
+    # 训练和预测
+    for epoch in range(num_epochs):
+        ppl, speed = train_epoch_ch8(net, train_iter, loss, updater, use_random_iter)
+        if (epoch + 1) % 10 == 0:
+            print(predict('time traveller'))
+            animator.add(epoch + 1, [ppl])
+    print(f'困惑度 {ppl:.1f}, {speed:.1f} 词元/秒')
+    print(predict('time traveller'))
+    print(predict('traveller'))
+
+class RNNModel(nn.Module):
+    """循环神经网络模型
+
+    Defined in :numref:`sec_rnn-concise`"""
+    def __init__(self, rnn_layer, vocab_size, bidirectional=False, **kwargs):
+        super(RNNModel, self).__init__(**kwargs)
+        self.rnn = rnn_layer
+        self.vocab_size = vocab_size
+        self.num_hiddens = self.rnn.hidden_size
+        self.bidirectional = bidirectional
+        # 如果RNN是双向的，num_directions应该是2，否则应该是1
+        if not self.bidirectional:
+            self.num_directions = 1
+            self.linear = nn.Linear(self.num_hiddens, self.vocab_size)
+        else:
+            self.num_directions = 2
+            self.linear = nn.Linear(self.num_hiddens * 2, self.vocab_size)
+
+    def __call__(self, inputs, state):
+        X = d2l.mlx_one_hot(inputs.T, self.vocab_size)
+        X = X.astype(mx.float32)
+        # Y, state = self.rnn(X, state)
+        Y = self.rnn(X.swapaxes(0, 1), state)[0, :, :, :].swapaxes(0, 1)
+        state = self.rnn(X.swapaxes(0, 1), state)[:, :, -1, :]
+        # 全连接层首先将Y的形状改为(时间步数*批量大小,隐藏单元数)
+        # 它的输出形状是(时间步数*批量大小,词表大小)。
+        output = self.linear(Y.reshape((-1, Y.shape[-1])))
+        return output, state
+
+    def begin_state(self, batch_size=1, device=None):
+        # 假设nn.RNN只有一层，只有在是LSTM或GRU时才处理num_layers
+        num_layers = getattr(self.rnn, 'num_layers', 1)
+        if not isinstance(self.rnn, nn.LSTM):
+            # nn.GRU以张量作为隐状态
+            return mx.zeros((self.num_directions * num_layers, batch_size, self.num_hiddens))
+        else:
+            # nn.LSTM以元组作为隐状态
+            return (mx.zeros((self.num_directions * num_layers, batch_size, self.num_hiddens)),
+                    mx.zeros((self.num_directions * num_layers, batch_size, self.num_hiddens)))
 
 
 # Alias defined in config.ini

@@ -438,54 +438,301 @@ def corr2d(X, K):
                 X[i: i + h, j: j + w] * K))
     return Y
 
-class TrainCallback(tf.keras.callbacks.Callback):
-    """一个以可视化的训练进展的回调
+class Residual(tf.keras.Model):
+    def __init__(self, num_channels, use_1x1conv=False, strides=1):
+        super().__init__()
+        self.conv1 = tf.keras.layers.Conv2D(
+            num_channels, padding='same', kernel_size=3, strides=strides)
+        self.conv2 = tf.keras.layers.Conv2D(
+            num_channels, kernel_size=3, padding='same')
+        self.conv3 = None
+        if use_1x1conv:
+            self.conv3 = tf.keras.layers.Conv2D(
+                num_channels, kernel_size=1, strides=strides)
+        self.bn1 = tf.keras.layers.BatchNormalization()
+        self.bn2 = tf.keras.layers.BatchNormalization()
 
-    Defined in :numref:`sec_lenet`"""
-    def __init__(self, net, train_iter, test_iter, num_epochs, device_name):
-        self.timer = d2l.Timer()
-        self.animator = d2l.Animator(
-            xlabel='epoch', xlim=[1, num_epochs], legend=[
-                'train loss', 'train acc', 'test acc'])
-        self.net = net
-        self.train_iter = train_iter
-        self.test_iter = test_iter
-        self.num_epochs = num_epochs
-        self.device_name = device_name
+    def call(self, X):
+        Y = tf.keras.activations.relu(self.bn1(self.conv1(X)))
+        Y = self.bn2(self.conv2(Y))
+        if self.conv3 is not None:
+            X = self.conv3(X)
+        Y += X
+        return tf.keras.activations.relu(Y)
 
-    def on_epoch_begin(self, epoch, logs=None):
-        self.timer.start()
+d2l.DATA_HUB['time_machine'] = (d2l.DATA_URL + 'timemachine.txt',
+                                '090b5e7e70c295757f55df93cb0a180b9691891a')
 
-    def on_epoch_end(self, epoch, logs):
-        self.timer.stop()
-        test_acc = self.net.evaluate(
-            self.test_iter, verbose=0, return_dict=True)['accuracy']
-        metrics = (logs['loss'], logs['accuracy'], test_acc)
-        self.animator.add(epoch + 1, metrics)
-        if epoch == self.num_epochs - 1:
-            batch_size = next(iter(self.train_iter))[0].shape[0]
-            num_examples = batch_size * tf.data.experimental.cardinality(
-                self.train_iter).numpy()
-            print(f'loss {metrics[0]:.3f}, train acc {metrics[1]:.3f}, '
-                  f'test acc {metrics[2]:.3f}')
-            print(f'{num_examples / self.timer.avg():.1f} examples/sec on '
-                  f'{str(self.device_name)}')
+def read_time_machine():
+    """将时间机器数据集加载到文本行的列表中
 
-def train_ch6(net_fn, train_iter, test_iter, num_epochs, lr, device):
-    """用GPU训练模型(在第六章定义)
+    Defined in :numref:`sec_text_preprocessing`"""
+    with open(d2l.download('time_machine'), 'r') as f:
+        lines = f.readlines()
+    return [re.sub('[^A-Za-z]+', ' ', line).strip().lower() for line in lines]
 
-    Defined in :numref:`sec_lenet`"""
-    device_name = device._device_name
-    strategy = tf.distribute.OneDeviceStrategy(device_name)
+def tokenize(lines, token='word'):
+    """将文本行拆分为单词或字符词元
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    if token == 'word':
+        return [line.split() for line in lines]
+    elif token == 'char':
+        return [list(line) for line in lines]
+    else:
+        print('错误：未知词元类型：' + token)
+
+class Vocab:
+    """文本词表"""
+    def __init__(self, tokens=None, min_freq=0, reserved_tokens=None):
+        """Defined in :numref:`sec_text_preprocessing`"""
+        if tokens is None:
+            tokens = []
+        if reserved_tokens is None:
+            reserved_tokens = []
+        # 按出现频率排序
+        counter = count_corpus(tokens)
+        self._token_freqs = sorted(counter.items(), key=lambda x: x[1],
+                                   reverse=True)
+        # 未知词元的索引为0
+        self.idx_to_token = ['<unk>'] + reserved_tokens
+        self.token_to_idx = {token: idx
+                             for idx, token in enumerate(self.idx_to_token)}
+        for token, freq in self._token_freqs:
+            if freq < min_freq:
+                break
+            if token not in self.token_to_idx:
+                self.idx_to_token.append(token)
+                self.token_to_idx[token] = len(self.idx_to_token) - 1
+
+    def __len__(self):
+        return len(self.idx_to_token)
+
+    def __getitem__(self, tokens):
+        if not isinstance(tokens, (list, tuple)):
+            return self.token_to_idx.get(tokens, self.unk)
+        return [self.__getitem__(token) for token in tokens]
+
+    def to_tokens(self, indices):
+        if not isinstance(indices, (list, tuple)):
+            return self.idx_to_token[indices]
+        return [self.idx_to_token[index] for index in indices]
+
+    @property
+    def unk(self):  # 未知词元的索引为0
+        return 0
+
+    @property
+    def token_freqs(self):
+        return self._token_freqs
+
+def count_corpus(tokens):
+    """统计词元的频率
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    # 这里的tokens是1D列表或2D列表
+    if len(tokens) == 0 or isinstance(tokens[0], list):
+        # 将词元列表展平成一个列表
+        tokens = [token for line in tokens for token in line]
+    return collections.Counter(tokens)
+
+def load_corpus_time_machine(max_tokens=-1):
+    """返回时光机器数据集的词元索引列表和词表
+
+    Defined in :numref:`sec_text_preprocessing`"""
+    lines = read_time_machine()
+    tokens = tokenize(lines, 'char')
+    vocab = Vocab(tokens)
+    # 因为时光机器数据集中的每个文本行不一定是一个句子或一个段落，
+    # 所以将所有文本行展平到一个列表中
+    corpus = [vocab[token] for line in tokens for token in line]
+    if max_tokens > 0:
+        corpus = corpus[:max_tokens]
+    return corpus, vocab
+
+def seq_data_iter_random(corpus, batch_size, num_steps):
+    """使用随机抽样生成一个小批量子序列
+
+    Defined in :numref:`sec_language_model`"""
+    # 从随机偏移量开始对序列进行分区，随机范围包括num_steps-1
+    corpus = corpus[random.randint(0, num_steps - 1):]
+    # 减去1，是因为我们需要考虑标签
+    num_subseqs = (len(corpus) - 1) // num_steps
+    # 长度为num_steps的子序列的起始索引
+    initial_indices = list(range(0, num_subseqs * num_steps, num_steps))
+    # 在随机抽样的迭代过程中，
+    # 来自两个相邻的、随机的、小批量中的子序列不一定在原始序列上相邻
+    random.shuffle(initial_indices)
+
+    def data(pos):
+        # 返回从pos位置开始的长度为num_steps的序列
+        return corpus[pos: pos + num_steps]
+
+    num_batches = num_subseqs // batch_size
+    for i in range(0, batch_size * num_batches, batch_size):
+        # 在这里，initial_indices包含子序列的随机起始索引
+        initial_indices_per_batch = initial_indices[i: i + batch_size]
+        X = [data(j) for j in initial_indices_per_batch]
+        Y = [data(j + 1) for j in initial_indices_per_batch]
+        yield d2l.tensor(X), d2l.tensor(Y)
+
+def seq_data_iter_sequential(corpus, batch_size, num_steps):
+    """使用顺序分区生成一个小批量子序列
+
+    Defined in :numref:`sec_language_model`"""
+    # 从随机偏移量开始划分序列
+    offset = random.randint(0, num_steps)
+    num_tokens = ((len(corpus) - offset - 1) // batch_size) * batch_size
+    Xs = d2l.tensor(corpus[offset: offset + num_tokens])
+    Ys = d2l.tensor(corpus[offset + 1: offset + 1 + num_tokens])
+    Xs = d2l.reshape(Xs, (batch_size, -1))
+    Ys = d2l.reshape(Ys, (batch_size, -1))
+    num_batches = Xs.shape[1] // num_steps
+    for i in range(0, num_batches * num_steps, num_steps):
+        X = Xs[:, i: i + num_steps]
+        Y = Ys[:, i: i + num_steps]
+        yield X, Y
+
+class SeqDataLoader:
+    """加载序列数据的迭代器"""
+    def __init__(self, batch_size, num_steps, use_random_iter, max_tokens):
+        """Defined in :numref:`sec_language_model`"""
+        if use_random_iter:
+            self.data_iter_fn = d2l.seq_data_iter_random
+        else:
+            self.data_iter_fn = d2l.seq_data_iter_sequential
+        self.corpus, self.vocab = d2l.load_corpus_time_machine(max_tokens)
+        self.batch_size, self.num_steps = batch_size, num_steps
+
+    def __iter__(self):
+        return self.data_iter_fn(self.corpus, self.batch_size, self.num_steps)
+
+def load_data_time_machine(batch_size, num_steps,
+                           use_random_iter=False, max_tokens=10000):
+    """返回时光机器数据集的迭代器和词表
+
+    Defined in :numref:`sec_language_model`"""
+    data_iter = SeqDataLoader(
+        batch_size, num_steps, use_random_iter, max_tokens)
+    return data_iter, data_iter.vocab
+
+class RNNModelScratch:
+    """从零开始实现的循环神经网络模型"""
+    def __init__(self, vocab_size, num_hiddens,
+                 init_state, forward_fn, get_params):
+        """Defined in :numref:`sec_rnn_scratch`"""
+        self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
+        self.init_state, self.forward_fn = init_state, forward_fn
+        self.trainable_variables = get_params(vocab_size, num_hiddens)
+
+    def __call__(self, X, state):
+        X = tf.one_hot(tf.transpose(X), self.vocab_size)
+        X = tf.cast(X, tf.float32)
+        return self.forward_fn(X, state, self.trainable_variables)
+
+    def begin_state(self, batch_size, *args, **kwargs):
+        return self.init_state(batch_size, self.num_hiddens)
+
+def predict_ch8(prefix, num_preds, net, vocab):
+    """在prefix后面生成新字符
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    state = net.begin_state(batch_size=1, dtype=tf.float32)
+    outputs = [vocab[prefix[0]]]
+    get_input = lambda: d2l.reshape(d2l.tensor([outputs[-1]]),
+                                    (1, 1)).numpy()
+    for y in prefix[1:]:  # 预热期
+        _, state = net(get_input(), state)
+        outputs.append(vocab[y])
+    for _ in range(num_preds):  # 预测num_preds步
+        y, state = net(get_input(), state)
+        outputs.append(int(y.numpy().argmax(axis=1).reshape(1)))
+    return ''.join([vocab.idx_to_token[i] for i in outputs])
+
+def grad_clipping(grads, theta):
+    """裁剪梯度
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    theta = tf.constant(theta, dtype=tf.float32)
+    new_grad = []
+    for grad in grads:
+        if isinstance(grad, tf.IndexedSlices):
+            new_grad.append(tf.convert_to_tensor(grad))
+        else:
+            new_grad.append(grad)
+    norm = tf.math.sqrt(sum((tf.reduce_sum(grad ** 2)).numpy()
+                        for grad in new_grad))
+    norm = tf.cast(norm, tf.float32)
+    if tf.greater(norm, theta):
+        for i, grad in enumerate(new_grad):
+            new_grad[i] = grad * theta / norm
+    else:
+        new_grad = new_grad
+    return new_grad
+
+def train_epoch_ch8(net, train_iter, loss, updater, use_random_iter):
+    """训练模型一个迭代周期（定义见第8章）
+
+    Defined in :numref:`sec_rnn_scratch`"""
+    state, timer = None, d2l.Timer()
+    metric = d2l.Accumulator(2)  # 训练损失之和,词元数量
+    for X, Y in train_iter:
+        if state is None or use_random_iter:
+            # 在第一次迭代或使用随机抽样时初始化state
+            state = net.begin_state(batch_size=X.shape[0], dtype=tf.float32)
+        with tf.GradientTape(persistent=True) as g:
+            y_hat, state = net(X, state)
+            y = d2l.reshape(tf.transpose(Y), (-1))
+            l = loss(y, y_hat)
+        params = net.trainable_variables
+        grads = g.gradient(l, params)
+        grads = grad_clipping(grads, 1)
+        updater.apply_gradients(zip(grads, params))
+        # Keras默认返回一个批量中的平均损失
+        metric.add(l * d2l.size(y), d2l.size(y))
+    return math.exp(metric[0] / metric[1]), metric[1] / timer.stop()
+
+def train_ch8(net, train_iter, vocab, lr, num_epochs, strategy,
+              use_random_iter=False):
+    """训练模型（定义见第8章）
+
+    Defined in :numref:`sec_rnn_scratch`"""
     with strategy.scope():
-        optimizer = tf.keras.optimizers.SGD(learning_rate=lr)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        net = net_fn()
-        net.compile(optimizer=optimizer, loss=loss, metrics=['accuracy'])
-    callback = TrainCallback(net, train_iter, test_iter, num_epochs,
-                             device_name)
-    net.fit(train_iter, epochs=num_epochs, verbose=0, callbacks=[callback])
-    return net
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=True)
+        updater = tf.keras.optimizers.SGD(lr)
+    animator = d2l.Animator(xlabel='epoch', ylabel='perplexity',
+                            legend=['train'], xlim=[10, num_epochs])
+    predict = lambda prefix: predict_ch8(prefix, 50, net, vocab)
+    # 训练和预测
+    for epoch in range(num_epochs):
+        ppl, speed = train_epoch_ch8(net, train_iter, loss, updater,
+                                     use_random_iter)
+        if (epoch + 1) % 10 == 0:
+            print(predict('time traveller'))
+            animator.add(epoch + 1, [ppl])
+    device = d2l.try_gpu()._device_name
+    print(f'困惑度 {ppl:.1f}, {speed:.1f} 词元/秒 {str(device)}')
+    print(predict('time traveller'))
+    print(predict('traveller'))
+
+class RNNModel(tf.keras.layers.Layer):
+    """Defined in :numref:`sec_rnn-concise`"""
+    def __init__(self, rnn_layer, vocab_size, **kwargs):
+        super(RNNModel, self).__init__(**kwargs)
+        self.rnn = rnn_layer
+        self.vocab_size = vocab_size
+        self.dense = tf.keras.layers.Dense(vocab_size)
+
+    def call(self, inputs, state):
+        X = tf.one_hot(tf.transpose(inputs), self.vocab_size)
+        # rnn返回两个以上的值
+        Y, *state = self.rnn(X, state)
+        output = self.dense(tf.reshape(Y, (-1, Y.shape[-1])))
+        return output, state
+
+    def begin_state(self, *args, **kwargs):
+        return self.rnn.cell.get_initial_state(*args, **kwargs)
 
 
 # Alias defined in config.ini

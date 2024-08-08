@@ -871,6 +871,46 @@ def train_ch8(net, train_iter, vocab, lr, num_epochs, use_random_iter=False):
     print(predict('time traveller'))
     print(predict('traveller'))
 
+class RNNModel(nn.Module):
+    """循环神经网络模型
+
+    Defined in :numref:`sec_rnn-concise`"""
+    def __init__(self, rnn_layer, vocab_size, bidirectional=False, **kwargs):
+        super(RNNModel, self).__init__(**kwargs)
+        self.rnn = rnn_layer
+        self.vocab_size = vocab_size
+        self.num_hiddens = self.rnn.hidden_size
+        self.bidirectional = bidirectional
+        # 如果RNN是双向的，num_directions应该是2，否则应该是1
+        if not self.bidirectional:
+            self.num_directions = 1
+            self.linear = nn.Linear(self.num_hiddens, self.vocab_size)
+        else:
+            self.num_directions = 2
+            self.linear = nn.Linear(self.num_hiddens * 2, self.vocab_size)
+
+    def __call__(self, inputs, state):
+        X = d2l.mlx_one_hot(inputs.T, self.vocab_size)
+        X = X.astype(mx.float32)
+        # Y, state = self.rnn(X, state)
+        Y = self.rnn(X.swapaxes(0, 1), state)[0, :, :, :].swapaxes(0, 1)
+        state = self.rnn(X.swapaxes(0, 1), state)[:, :, -1, :]
+        # 全连接层首先将Y的形状改为(时间步数*批量大小,隐藏单元数)
+        # 它的输出形状是(时间步数*批量大小,词表大小)。
+        output = self.linear(Y.reshape((-1, Y.shape[-1])))
+        return output, state
+
+    def begin_state(self, batch_size=1, device=None):
+        # 假设nn.RNN只有一层，只有在是LSTM或GRU时才处理num_layers
+        num_layers = getattr(self.rnn, 'num_layers', 1)
+        if not isinstance(self.rnn, nn.LSTM):
+            # nn.GRU以张量作为隐状态
+            return mx.zeros((self.num_directions * num_layers, batch_size, self.num_hiddens))
+        else:
+            # nn.LSTM以元组作为隐状态
+            return (mx.zeros((self.num_directions * num_layers, batch_size, self.num_hiddens)),
+                    mx.zeros((self.num_directions * num_layers, batch_size, self.num_hiddens)))
+
 
 # Alias defined in config.ini
 nn_Module = nn.Module
